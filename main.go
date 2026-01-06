@@ -16,6 +16,7 @@ import (
 
 	"fastsync/pkg/mirror"
 	"fastsync/pkg/release"
+	"fastsync/pkg/version"
 )
 
 const (
@@ -34,7 +35,7 @@ type PullSecret struct {
 
 func main() {
 	var (
-		version        = flag.String("version", "", "OpenShift version to mirror (e.g., 4.20.8)")
+		ocpVersion     = flag.String("version", "", "OpenShift version to mirror (e.g., 4.20.8)")
 		workers        = flag.Int("workers", defaultWorkers, "Number of parallel image workers")
 		blobWorkers    = flag.Int("blob-workers", 4, "Number of parallel blob uploads per image")
 		pullSecretPath = flag.String("pull-secret", "", "Path to pull secret JSON file")
@@ -42,10 +43,16 @@ func main() {
 		destRepo       = flag.String("dest-repo", "openshift/release", "Destination repository path")
 		sourceRegistry = flag.String("source-registry", defaultSourceRegistry, "Source registry for release images")
 		insecure       = flag.Bool("insecure", false, "Allow insecure registry connections")
+		showVersion    = flag.Bool("v", false, "Show version information")
 	)
 	flag.Parse()
 
-	if *version == "" {
+	if *showVersion {
+		fmt.Println(version.Info())
+		os.Exit(0)
+	}
+
+	if *ocpVersion == "" {
 		fmt.Fprintln(os.Stderr, "Error: --version is required")
 		flag.Usage()
 		os.Exit(1)
@@ -82,15 +89,15 @@ func main() {
 	}()
 
 	startTime := time.Now()
-	fmt.Printf("=== FastSync OpenShift %s ===\n", *version)
-	fmt.Printf("Source: %s:%s-x86_64\n", *sourceRegistry, *version)
-	fmt.Printf("Dest:   %s/%s:%s-x86_64\n", *destRegistry, *destRepo, *version)
+	fmt.Printf("=== FastSync OpenShift %s ===\n", *ocpVersion)
+	fmt.Printf("Source: %s:%s-x86_64\n", *sourceRegistry, *ocpVersion)
+	fmt.Printf("Dest:   %s/%s:%s-x86_64\n", *destRegistry, *destRepo, *ocpVersion)
 	fmt.Printf("Workers: %d images x %d blobs = %d concurrent\n", *workers, *blobWorkers, *workers**blobWorkers)
 	fmt.Println()
 
 	// Fetch release info
 	fmt.Print("Fetching release manifest... ")
-	rel, err := release.GetRelease(*sourceRegistry, *version, keychain, *insecure)
+	rel, err := release.GetRelease(*sourceRegistry, *ocpVersion, keychain, *insecure)
 	if err != nil {
 		fmt.Printf("FAILED\n")
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -133,7 +140,7 @@ func main() {
 	fmt.Printf("Skipped:  %d (already exist)\n", engine.Progress.Skipped)
 	fmt.Printf("Failed:   %d\n", engine.Progress.Failed)
 	fmt.Printf("Duration: %s\n", elapsed.Round(time.Second))
-	fmt.Printf("\nRelease: %s/%s:%s-x86_64\n", *destRegistry, *destRepo, *version)
+	fmt.Printf("\nRelease: %s/%s:%s-x86_64\n", *destRegistry, *destRepo, *ocpVersion)
 }
 
 func loadPullSecret(path string) (*mirror.PullSecretKeychain, error) {
