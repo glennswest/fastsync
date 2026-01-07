@@ -161,13 +161,10 @@ func (e *Engine) mirrorImage(ctx context.Context, comp release.ComponentImage) R
 		return result
 	}
 
-	// Build destination reference - preserve the digest
-	var destRefStr string
-	if digest, ok := srcRef.(name.Digest); ok {
-		destRefStr = fmt.Sprintf("%s/%s@%s", e.DestRegistry, e.DestRepo, digest.DigestStr())
-	} else {
-		destRefStr = fmt.Sprintf("%s/%s:%s", e.DestRegistry, e.DestRepo, comp.Name)
-	}
+	// Build destination reference - use component name as tag
+	// Note: Pushing by digest creates temp tags in Quay that get garbage collected
+	// Using component name as tag ensures manifests are permanently anchored
+	destRefStr := fmt.Sprintf("%s/%s:%s", e.DestRegistry, e.DestRepo, comp.Name)
 	result.Dest = destRefStr
 
 	destRef, err := name.ParseReference(destRefStr)
