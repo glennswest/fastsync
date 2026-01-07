@@ -48,9 +48,9 @@ chmod +x "${CACHE_DIR}/openshift-install-${VERSION}"
 sha256sum "${CACHE_DIR}/openshift-install-${VERSION}" | cut -d" " -f1 > "${CACHE_DIR}/openshift-install-${VERSION}.sha256"
 echo "    Saved: openshift-install-${VERSION}"
 
-# macOS (download from mirror)
-echo "  - Downloading macOS binary..."
-curl -sL "${MIRROR_URL}/openshift-install-mac-amd64-${VERSION}.tar.gz" | tar xz -C "${CACHE_DIR}"
+# macOS Intel (download from mirror)
+echo "  - Downloading macOS (Intel) binary..."
+curl -sL "${MIRROR_URL}/openshift-install-mac-${VERSION}.tar.gz" | tar xz -C "${CACHE_DIR}"
 mv "${CACHE_DIR}/openshift-install" "${CACHE_DIR}/openshift-install-${VERSION}-mac"
 chmod +x "${CACHE_DIR}/openshift-install-${VERSION}-mac"
 sha256sum "${CACHE_DIR}/openshift-install-${VERSION}-mac" | cut -d" " -f1 > "${CACHE_DIR}/openshift-install-${VERSION}-mac.sha256"
