@@ -249,6 +249,12 @@ func CreateRewrittenReleaseImage(img v1.Image, destRegistry, destRepo string) (v
 		return nil, fmt.Errorf("getting media type: %w", err)
 	}
 
+	// Get original manifest to preserve annotations
+	origManifest, err := img.Manifest()
+	if err != nil {
+		return nil, fmt.Errorf("getting manifest: %w", err)
+	}
+
 	// Build the new image: start with empty, add layers, then set config
 	newImg := mutate.MediaType(empty.Image, mediaType)
 
@@ -262,6 +268,11 @@ func CreateRewrittenReleaseImage(img v1.Image, destRegistry, destRepo string) (v
 	newImg, err = mutate.ConfigFile(newImg, newConfig)
 	if err != nil {
 		return nil, fmt.Errorf("setting config: %w", err)
+	}
+
+	// Preserve original manifest annotations (contains displayVersions, etc.)
+	if origManifest.Annotations != nil && len(origManifest.Annotations) > 0 {
+		newImg = mutate.Annotations(newImg, origManifest.Annotations).(v1.Image)
 	}
 
 	return newImg, nil
