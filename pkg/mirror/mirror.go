@@ -192,8 +192,8 @@ func (e *Engine) mirrorImage(ctx context.Context, comp release.ComponentImage) R
 		destOpts = append(destOpts, remote.WithTransport(transport))
 	}
 
-	// Check if image already exists at destination
-	if e.imageExists(ctx, destRef, destOpts) {
+	// Check if image already exists at destination (with verification)
+	if e.verifyImageExists(ctx, destRef, destOpts) {
 		result.Skipped = true
 		return result
 	}
@@ -208,6 +208,12 @@ func (e *Engine) mirrorImage(ctx context.Context, comp release.ComponentImage) R
 	// Push to destination with parallel blob uploads
 	if err := remote.Write(destRef, img, destOpts...); err != nil {
 		result.Error = fmt.Errorf("writing to dest: %w", err)
+		return result
+	}
+
+	// Verify the image was written successfully
+	if !e.verifyImageExists(ctx, destRef, destOpts) {
+		result.Error = fmt.Errorf("verification failed: image not found after write")
 		return result
 	}
 
@@ -251,12 +257,28 @@ func (e *Engine) mirrorReleaseImage(ctx context.Context, rel *release.Release) e
 		return fmt.Errorf("rewriting image references: %w", err)
 	}
 
-	return remote.Write(destRef, rewrittenImg, destOpts...)
+	if err := remote.Write(destRef, rewrittenImg, destOpts...); err != nil {
+		return fmt.Errorf("writing release image: %w", err)
+	}
+
+	// Verify the release image was written successfully
+	if !e.verifyImageExists(ctx, destRef, destOpts) {
+		return fmt.Errorf("verification failed: release image not found after write")
+	}
+
+	return nil
 }
 
-func (e *Engine) imageExists(ctx context.Context, ref name.Reference, opts []remote.Option) bool {
-	_, err := remote.Head(ref, opts...)
-	return err == nil
+// verifyImageExists checks if an image exists by fetching its manifest
+// This is more reliable than HEAD which can return false positives
+func (e *Engine) verifyImageExists(ctx context.Context, ref name.Reference, opts []remote.Option) bool {
+	// Use Get to actually fetch and verify the manifest exists
+	desc, err := remote.Get(ref, opts...)
+	if err != nil {
+		return false
+	}
+	// Verify we got a valid manifest with a digest
+	return desc.Digest.String() != ""
 }
 
 // MultiKeychain combines multiple keychains for authentication
