@@ -19,21 +19,33 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 )
 
+// ImageTag represents a single tag in the image-references
+type ImageTag struct {
+	Name        string            `json:"name"`
+	Annotations map[string]string `json:"annotations,omitempty"`
+	From        struct {
+		Kind string `json:"kind"`
+		Name string `json:"name"`
+	} `json:"from"`
+	Generation      interface{}            `json:"generation,omitempty"`
+	ImportPolicy    map[string]interface{} `json:"importPolicy,omitempty"`
+	ReferencePolicy map[string]string      `json:"referencePolicy,omitempty"`
+}
+
 // ImageReferences is the structure of the image-references file in the release
 type ImageReferences struct {
 	Kind       string `json:"kind"`
 	APIVersion string `json:"apiVersion"`
 	Metadata   struct {
-		Name string `json:"name"`
+		Name              string            `json:"name"`
+		CreationTimestamp string            `json:"creationTimestamp,omitempty"`
+		Annotations       map[string]string `json:"annotations,omitempty"`
 	} `json:"metadata"`
 	Spec struct {
-		Tags []struct {
-			Name string `json:"name"`
-			From struct {
-				Kind string `json:"kind"`
-				Name string `json:"name"`
-			} `json:"from"`
-		} `json:"tags"`
+		LookupPolicy struct {
+			Local bool `json:"local"`
+		} `json:"lookupPolicy,omitempty"`
+		Tags []ImageTag `json:"tags"`
 	} `json:"spec"`
 }
 
@@ -145,25 +157,28 @@ func findImageReferencesInTar(r io.Reader) (*ImageReferences, error) {
 }
 
 // RewriteImageReferences rewrites image references to point to the destination registry
+// while preserving all metadata including annotations (which contain version info)
 func RewriteImageReferences(refs *ImageReferences, destRegistry, destRepo string) *ImageReferences {
 	rewritten := &ImageReferences{
 		Kind:       refs.Kind,
 		APIVersion: refs.APIVersion,
 		Metadata:   refs.Metadata,
 	}
-	rewritten.Spec.Tags = make([]struct {
-		Name string `json:"name"`
-		From struct {
-			Kind string `json:"kind"`
-			Name string `json:"name"`
-		} `json:"from"`
-	}, len(refs.Spec.Tags))
+	rewritten.Spec.LookupPolicy = refs.Spec.LookupPolicy
+	rewritten.Spec.Tags = make([]ImageTag, len(refs.Spec.Tags))
 
 	for i, tag := range refs.Spec.Tags {
-		rewritten.Spec.Tags[i].Name = tag.Name
+		// Copy all fields from the original tag
+		rewritten.Spec.Tags[i] = ImageTag{
+			Name:            tag.Name,
+			Annotations:     tag.Annotations,
+			Generation:      tag.Generation,
+			ImportPolicy:    tag.ImportPolicy,
+			ReferencePolicy: tag.ReferencePolicy,
+		}
 		rewritten.Spec.Tags[i].From.Kind = tag.From.Kind
 
-		// Extract digest from original image reference
+		// Rewrite the image reference to point to destination registry
 		// Format: registry/repo@sha256:digest or registry/repo:tag
 		origImage := tag.From.Name
 		if idx := strings.LastIndex(origImage, "@"); idx != -1 {
