@@ -318,7 +318,7 @@ func (e *Engine) mirrorReleaseImage(ctx context.Context, rel *release.Release) e
 }
 
 // verifyImageDigest checks if an image exists with the expected digest and is valid
-// This does a deeper check than just manifest existence - it verifies the config blob is accessible
+// This does a deep check: manifest, config, AND all layer blobs must be accessible
 func (e *Engine) verifyImageDigest(ctx context.Context, ref name.Reference, expectedDigest string, opts []remote.Option) bool {
 	// First check if the manifest exists with the right digest
 	desc, err := remote.Get(ref, opts...)
@@ -330,7 +330,6 @@ func (e *Engine) verifyImageDigest(ctx context.Context, ref name.Reference, expe
 	}
 
 	// Now verify the image is actually usable by fetching it and checking the config
-	// This catches cases where the manifest exists but blobs are missing
 	img, err := remote.Image(ref, opts...)
 	if err != nil {
 		return false
@@ -342,10 +341,24 @@ func (e *Engine) verifyImageDigest(ctx context.Context, ref name.Reference, expe
 		return false
 	}
 
+	// Verify ALL layer blobs exist by checking each one
+	// This catches cases where manifest/config exist but layer blobs are missing
+	layers, err := img.Layers()
+	if err != nil {
+		return false
+	}
+	for _, layer := range layers {
+		// Check layer exists by getting its size (requires blob to be accessible)
+		_, err := layer.Size()
+		if err != nil {
+			return false
+		}
+	}
+
 	return true
 }
 
-// verifyImageExists checks if an image exists and is valid by fetching its manifest and config
+// verifyImageExists checks if an image exists and is valid (manifest, config, and all layers)
 func (e *Engine) verifyImageExists(ctx context.Context, ref name.Reference, opts []remote.Option) bool {
 	// Check manifest exists
 	desc, err := remote.Get(ref, opts...)
@@ -364,7 +377,23 @@ func (e *Engine) verifyImageExists(ctx context.Context, ref name.Reference, opts
 
 	// Verify config is accessible
 	_, err = img.ConfigFile()
-	return err == nil
+	if err != nil {
+		return false
+	}
+
+	// Verify all layer blobs exist
+	layers, err := img.Layers()
+	if err != nil {
+		return false
+	}
+	for _, layer := range layers {
+		_, err := layer.Size()
+		if err != nil {
+			return false
+		}
+	}
+
+	return true
 }
 
 // MultiKeychain combines multiple keychains for authentication
