@@ -206,27 +206,46 @@ func (e *Engine) mirrorImage(ctx context.Context, comp release.ComponentImage) R
 		}
 	}
 
-	// Fetch source image
-	img, err := remote.Image(srcRef, srcOpts...)
-	if err != nil {
-		result.Error = fmt.Errorf("fetching source: %w", err)
-		return result
-	}
-
-	// Push to destination with parallel blob uploads
-	if err := remote.Write(destRef, img, destOpts...); err != nil {
-		result.Error = fmt.Errorf("writing to dest: %w", err)
-		return result
-	}
-
-	// Verify the image was written with correct digest
-	if expectedDigest != "" {
-		if !e.verifyImageDigest(ctx, destRef, expectedDigest, destOpts) {
-			result.Error = fmt.Errorf("verification failed: digest mismatch after write")
-			return result
+	// Retry loop for fetch and push
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			// Exponential backoff: 2s, 4s, 8s...
+			wait := retryBaseWait * time.Duration(1<<(attempt-1))
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				result.Error = ctx.Err()
+				return result
+			}
 		}
+
+		// Fetch source image
+		img, err := remote.Image(srcRef, srcOpts...)
+		if err != nil {
+			lastErr = fmt.Errorf("fetching source: %w", err)
+			continue
+		}
+
+		// Push to destination with parallel blob uploads
+		if err := remote.Write(destRef, img, destOpts...); err != nil {
+			lastErr = fmt.Errorf("writing to dest: %w", err)
+			continue
+		}
+
+		// Verify the image was written with correct digest
+		if expectedDigest != "" {
+			if !e.verifyImageDigest(ctx, destRef, expectedDigest, destOpts) {
+				lastErr = fmt.Errorf("verification failed: digest mismatch after write")
+				continue
+			}
+		}
+
+		// Success
+		return result
 	}
 
+	result.Error = fmt.Errorf("after %d attempts: %w", maxRetries, lastErr)
 	return result
 }
 
@@ -256,27 +275,46 @@ func (e *Engine) mirrorReleaseImage(ctx context.Context, rel *release.Release) e
 		destOpts = append(destOpts, remote.WithTransport(transport))
 	}
 
-	img, err := remote.Image(srcRef, srcOpts...)
-	if err != nil {
-		return fmt.Errorf("fetching: %w", err)
+	// Retry loop for fetch and push
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			wait := retryBaseWait * time.Duration(1<<(attempt-1))
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+
+		img, err := remote.Image(srcRef, srcOpts...)
+		if err != nil {
+			lastErr = fmt.Errorf("fetching: %w", err)
+			continue
+		}
+
+		// Rewrite image references to point to destination registry
+		rewrittenImg, err := release.CreateRewrittenReleaseImage(img, e.DestRegistry, e.DestRepo)
+		if err != nil {
+			lastErr = fmt.Errorf("rewriting image references: %w", err)
+			continue
+		}
+
+		if err := remote.Write(destRef, rewrittenImg, destOpts...); err != nil {
+			lastErr = fmt.Errorf("writing release image: %w", err)
+			continue
+		}
+
+		// Verify the release image was written successfully
+		if !e.verifyImageExists(ctx, destRef, destOpts) {
+			lastErr = fmt.Errorf("verification failed: release image not found after write")
+			continue
+		}
+
+		return nil
 	}
 
-	// Rewrite image references to point to destination registry
-	rewrittenImg, err := release.CreateRewrittenReleaseImage(img, e.DestRegistry, e.DestRepo)
-	if err != nil {
-		return fmt.Errorf("rewriting image references: %w", err)
-	}
-
-	if err := remote.Write(destRef, rewrittenImg, destOpts...); err != nil {
-		return fmt.Errorf("writing release image: %w", err)
-	}
-
-	// Verify the release image was written successfully
-	if !e.verifyImageExists(ctx, destRef, destOpts) {
-		return fmt.Errorf("verification failed: release image not found after write")
-	}
-
-	return nil
+	return fmt.Errorf("after %d attempts: %w", maxRetries, lastErr)
 }
 
 // verifyImageDigest checks if an image exists with the expected digest and is valid
