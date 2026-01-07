@@ -192,10 +192,18 @@ func (e *Engine) mirrorImage(ctx context.Context, comp release.ComponentImage) R
 		destOpts = append(destOpts, remote.WithTransport(transport))
 	}
 
-	// Check if image already exists at destination (with verification)
-	if e.verifyImageExists(ctx, destRef, destOpts) {
-		result.Skipped = true
-		return result
+	// Get expected digest from source reference
+	var expectedDigest string
+	if digest, ok := srcRef.(name.Digest); ok {
+		expectedDigest = digest.DigestStr()
+	}
+
+	// Check if image already exists at destination with correct digest
+	if expectedDigest != "" {
+		if e.verifyImageDigest(ctx, destRef, expectedDigest, destOpts) {
+			result.Skipped = true
+			return result
+		}
 	}
 
 	// Fetch source image
@@ -211,10 +219,12 @@ func (e *Engine) mirrorImage(ctx context.Context, comp release.ComponentImage) R
 		return result
 	}
 
-	// Verify the image was written successfully
-	if !e.verifyImageExists(ctx, destRef, destOpts) {
-		result.Error = fmt.Errorf("verification failed: image not found after write")
-		return result
+	// Verify the image was written with correct digest
+	if expectedDigest != "" {
+		if !e.verifyImageDigest(ctx, destRef, expectedDigest, destOpts) {
+			result.Error = fmt.Errorf("verification failed: digest mismatch after write")
+			return result
+		}
 	}
 
 	return result
@@ -269,15 +279,22 @@ func (e *Engine) mirrorReleaseImage(ctx context.Context, rel *release.Release) e
 	return nil
 }
 
-// verifyImageExists checks if an image exists by fetching its manifest
-// This is more reliable than HEAD which can return false positives
-func (e *Engine) verifyImageExists(ctx context.Context, ref name.Reference, opts []remote.Option) bool {
-	// Use Get to actually fetch and verify the manifest exists
+// verifyImageDigest checks if an image exists with the expected digest
+func (e *Engine) verifyImageDigest(ctx context.Context, ref name.Reference, expectedDigest string, opts []remote.Option) bool {
 	desc, err := remote.Get(ref, opts...)
 	if err != nil {
 		return false
 	}
-	// Verify we got a valid manifest with a digest
+	// Verify the digest matches what we expect
+	return desc.Digest.String() == expectedDigest
+}
+
+// verifyImageExists checks if an image exists by fetching its manifest
+func (e *Engine) verifyImageExists(ctx context.Context, ref name.Reference, opts []remote.Option) bool {
+	desc, err := remote.Get(ref, opts...)
+	if err != nil {
+		return false
+	}
 	return desc.Digest.String() != ""
 }
 
