@@ -279,23 +279,54 @@ func (e *Engine) mirrorReleaseImage(ctx context.Context, rel *release.Release) e
 	return nil
 }
 
-// verifyImageDigest checks if an image exists with the expected digest
+// verifyImageDigest checks if an image exists with the expected digest and is valid
+// This does a deeper check than just manifest existence - it verifies the config blob is accessible
 func (e *Engine) verifyImageDigest(ctx context.Context, ref name.Reference, expectedDigest string, opts []remote.Option) bool {
+	// First check if the manifest exists with the right digest
 	desc, err := remote.Get(ref, opts...)
 	if err != nil {
 		return false
 	}
-	// Verify the digest matches what we expect
-	return desc.Digest.String() == expectedDigest
+	if desc.Digest.String() != expectedDigest {
+		return false
+	}
+
+	// Now verify the image is actually usable by fetching it and checking the config
+	// This catches cases where the manifest exists but blobs are missing
+	img, err := remote.Image(ref, opts...)
+	if err != nil {
+		return false
+	}
+
+	// Verify config is accessible (catches missing config blob)
+	_, err = img.ConfigFile()
+	if err != nil {
+		return false
+	}
+
+	return true
 }
 
-// verifyImageExists checks if an image exists by fetching its manifest
+// verifyImageExists checks if an image exists and is valid by fetching its manifest and config
 func (e *Engine) verifyImageExists(ctx context.Context, ref name.Reference, opts []remote.Option) bool {
+	// Check manifest exists
 	desc, err := remote.Get(ref, opts...)
 	if err != nil {
 		return false
 	}
-	return desc.Digest.String() != ""
+	if desc.Digest.String() == "" {
+		return false
+	}
+
+	// Verify the image is actually usable
+	img, err := remote.Image(ref, opts...)
+	if err != nil {
+		return false
+	}
+
+	// Verify config is accessible
+	_, err = img.ConfigFile()
+	return err == nil
 }
 
 // MultiKeychain combines multiple keychains for authentication
