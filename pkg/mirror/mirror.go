@@ -116,6 +116,9 @@ func (e *Engine) Mirror(ctx context.Context, rel *release.Release) error {
 	// Mirror the release image itself
 	if err := e.mirrorReleaseImage(ctx, rel); err != nil {
 		errors = append(errors, fmt.Errorf("release image: %w", err))
+		fmt.Printf("[release] FAILED: %v\n", err)
+	} else {
+		fmt.Printf("[release] OK (image references rewritten)\n")
 	}
 	atomic.AddInt64(&e.Progress.Completed, 1)
 
@@ -242,7 +245,13 @@ func (e *Engine) mirrorReleaseImage(ctx context.Context, rel *release.Release) e
 		return fmt.Errorf("fetching: %w", err)
 	}
 
-	return remote.Write(destRef, img, destOpts...)
+	// Rewrite image references to point to destination registry
+	rewrittenImg, err := release.CreateRewrittenReleaseImage(img, e.DestRegistry, e.DestRepo)
+	if err != nil {
+		return fmt.Errorf("rewriting image references: %w", err)
+	}
+
+	return remote.Write(destRef, rewrittenImg, destOpts...)
 }
 
 func (e *Engine) imageExists(ctx context.Context, ref name.Reference, opts []remote.Option) bool {
