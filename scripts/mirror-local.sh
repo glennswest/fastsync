@@ -56,15 +56,6 @@ chmod +x "${CACHE_DIR}/openshift-install-${VERSION}-mac"
 sha256sum "${CACHE_DIR}/openshift-install-${VERSION}-mac" | cut -d" " -f1 > "${CACHE_DIR}/openshift-install-${VERSION}-mac.sha256"
 echo "    Saved: openshift-install-${VERSION}-mac"
 
-# Windows (download from mirror)
-echo "  - Downloading Windows binary..."
-curl -sL "${MIRROR_URL}/openshift-install-windows-${VERSION}.zip" -o /tmp/oi-win.zip
-unzip -q -o /tmp/oi-win.zip -d "${CACHE_DIR}"
-mv "${CACHE_DIR}/openshift-install.exe" "${CACHE_DIR}/openshift-install-${VERSION}.exe"
-sha256sum "${CACHE_DIR}/openshift-install-${VERSION}.exe" | cut -d" " -f1 > "${CACHE_DIR}/openshift-install-${VERSION}.exe.sha256"
-rm /tmp/oi-win.zip
-echo "    Saved: openshift-install-${VERSION}.exe"
-
 # Also install Linux binary to /usr/local/bin for local use
 cp "${CACHE_DIR}/openshift-install-${VERSION}" /usr/local/bin/openshift-install
 chmod +x /usr/local/bin/openshift-install

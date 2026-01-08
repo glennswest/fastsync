@@ -482,8 +482,16 @@ func (e *Engine) verifyImageDigest(ctx context.Context, ref name.Reference, expe
 		return false
 	}
 	for _, layer := range layers {
-		// Check layer exists by getting its size (requires blob to be accessible)
-		_, err := layer.Size()
+		// Actually verify the blob exists by attempting to open a reader
+		// layer.Size() just returns manifest metadata, doesn't verify blob exists
+		rc, err := layer.Compressed()
+		if err != nil {
+			return false
+		}
+		// Read a single byte to confirm blob is accessible
+		buf := make([]byte, 1)
+		_, err = rc.Read(buf)
+		rc.Close()
 		if err != nil {
 			return false
 		}
@@ -521,7 +529,16 @@ func (e *Engine) verifyImageExists(ctx context.Context, ref name.Reference, opts
 		return false
 	}
 	for _, layer := range layers {
-		_, err := layer.Size()
+		// Actually verify the blob exists by attempting to open a reader
+		// layer.Size() just returns manifest metadata, doesn't verify blob exists
+		rc, err := layer.Compressed()
+		if err != nil {
+			return false
+		}
+		// Read a single byte to confirm blob is accessible
+		buf := make([]byte, 1)
+		_, err = rc.Read(buf)
+		rc.Close()
 		if err != nil {
 			return false
 		}
