@@ -3,18 +3,52 @@
         <h2>OpenShift Release Sync</h2>
     </div>
     <div class="content">
+        <!-- Sync Result - moved to top for visibility -->
+        <div id="sync-result" style="margin-bottom: 20px;"></div>
+
         <!-- Subtabs -->
         <div class="subtabs">
-            <div class="subtab active" onclick="showSubtab('from-quay', this)">From Quay.io</div>
+            <div class="subtab active" onclick="showSubtab('available', this)">Available Versions</div>
+            <div class="subtab" onclick="showSubtab('from-quay', this)">Manual Sync</div>
             <div class="subtab" onclick="showSubtab('from-local', this)">From Local Registry</div>
-            <div class="subtab" onclick="showSubtab('available', this)">Available Versions</div>
         </div>
 
-        <!-- From Quay.io -->
-        <div id="subtab-from-quay" class="subtab-content">
+        <!-- Available Versions (now first/default) -->
+        <div id="subtab-available" class="subtab-content">
             <div class="card">
                 <div class="card-header">
-                    <div class="card-title">Sync from Quay.io (Red Hat Official)</div>
+                    <div class="card-title">Available OpenShift Versions</div>
+                    <button class="btn btn-secondary btn-sm" hx-get="/api/openshift/versions" hx-target="#versions-grid">
+                        <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                        Refresh
+                    </button>
+                </div>
+                <div class="form-row" style="margin-bottom: 20px;">
+                    <div class="form-group">
+                        <label class="form-label">Filter by Minor Version</label>
+                        <select class="form-select" hx-get="/api/openshift/versions" hx-target="#versions-grid" name="minor" hx-include="[name='minor']">
+                            <option value="">All Versions</option>
+                            <option value="4.20">4.20</option>
+                            <option value="4.19">4.19</option>
+                            <option value="4.18">4.18</option>
+                            <option value="4.17">4.17</option>
+                            <option value="4.16">4.16</option>
+                            <option value="4.15">4.15</option>
+                            <option value="4.14">4.14</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="versions-grid" class="version-grid" hx-get="/api/openshift/versions" hx-trigger="load">
+                    <div class="empty-state">Loading available versions...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- From Quay.io (Manual) -->
+        <div id="subtab-from-quay" class="subtab-content" style="display: none;">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">Manual Sync from Quay.io</div>
                 </div>
                 <form hx-post="/api/sync" hx-target="#sync-result" hx-swap="innerHTML">
                     <input type="hidden" name="source" value="quay.io/openshift-release-dev/ocp-release">
@@ -98,47 +132,6 @@
                 </form>
             </div>
         </div>
-
-        <!-- Available Versions -->
-        <div id="subtab-available" class="subtab-content" style="display: none;">
-            <div class="card">
-                <div class="card-header">
-                    <div class="card-title">Available OpenShift Versions</div>
-                    <button class="btn btn-secondary btn-sm" hx-get="/api/openshift/versions" hx-target="#versions-grid">
-                        <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-                        Refresh
-                    </button>
-                </div>
-                <div class="form-row" style="margin-bottom: 20px;">
-                    <div class="form-group">
-                        <label class="form-label">Filter by Channel</label>
-                        <select class="form-select" hx-get="/api/openshift/versions" hx-target="#versions-grid" name="channel">
-                            <option value="">All Channels</option>
-                            <option value="stable">Stable</option>
-                            <option value="fast">Fast</option>
-                            <option value="candidate">Candidate</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Filter by Minor Version</label>
-                        <select class="form-select" hx-get="/api/openshift/versions" hx-target="#versions-grid" name="minor">
-                            <option value="">All Versions</option>
-                            <option value="4.18">4.18</option>
-                            <option value="4.17">4.17</option>
-                            <option value="4.16">4.16</option>
-                            <option value="4.15">4.15</option>
-                            <option value="4.14">4.14</option>
-                        </select>
-                    </div>
-                </div>
-                <div id="versions-grid" class="version-grid" hx-get="/api/openshift/versions" hx-trigger="load">
-                    <div class="empty-state">Loading available versions...</div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Sync Result -->
-        <div id="sync-result"></div>
     </div>
 </div>
 
@@ -149,4 +142,11 @@ function showSubtab(id, el) {
     document.getElementById('subtab-' + id).style.display = 'block';
     el.classList.add('active');
 }
+
+// Scroll to result when sync starts
+document.body.addEventListener('htmx:afterSwap', function(evt) {
+    if (evt.detail.target.id === 'sync-result' && evt.detail.target.innerHTML.trim() !== '') {
+        evt.detail.target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+});
 </script>

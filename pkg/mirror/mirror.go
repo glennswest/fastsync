@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 
 	"fastsync/pkg/release"
@@ -225,10 +226,33 @@ func (e *Engine) mirrorImage(ctx context.Context, comp release.ComponentImage) R
 		}
 	}
 
-	// Fetch source image first (this can happen in parallel)
-	img, err := remote.Image(srcRef, srcRemoteOpts...)
-	if err != nil {
-		result.Error = fmt.Errorf("fetching source: %w", err)
+	// Fetch source image with retry for transient auth errors
+	var img v1.Image
+	for fetchAttempt := 0; fetchAttempt < maxRetries; fetchAttempt++ {
+		if fetchAttempt > 0 {
+			// Wait before retry with exponential backoff
+			wait := retryBaseWait * time.Duration(1<<(fetchAttempt-1))
+			wait += time.Duration(rand.Intn(maxJitter)) * time.Millisecond
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				result.Error = ctx.Err()
+				return result
+			}
+		}
+
+		var fetchErr error
+		img, fetchErr = remote.Image(srcRef, srcRemoteOpts...)
+		if fetchErr == nil {
+			break
+		}
+
+		// Check if it's a retryable error (auth/network issues)
+		if isRetryableError(fetchErr) && fetchAttempt < maxRetries-1 {
+			continue
+		}
+
+		result.Error = fmt.Errorf("fetching source: %w", fetchErr)
 		return result
 	}
 
@@ -306,6 +330,31 @@ func isTransactionConflict(err error) bool {
 		strings.Contains(errStr, "MANIFEST_INVALID") ||
 		strings.Contains(errStr, "concurrent") ||
 		strings.Contains(errStr, "conflict")
+}
+
+// isRetryableError checks if the error is transient and worth retrying
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	// Auth errors can be transient due to token refresh issues under load
+	if strings.Contains(errStr, "UNAUTHORIZED") {
+		return true
+	}
+	// Network errors
+	if strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "EOF") ||
+		strings.Contains(errStr, "temporary failure") {
+		return true
+	}
+	// Rate limiting
+	if strings.Contains(errStr, "429") || strings.Contains(errStr, "too many requests") {
+		return true
+	}
+	return false
 }
 
 func (e *Engine) mirrorReleaseImage(ctx context.Context, rel *release.Release) error {
