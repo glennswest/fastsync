@@ -73,7 +73,12 @@ func InsecureTransport() *http.Transport {
 func GetRelease(sourceRegistry, version string, keychain authn.Keychain, insecure bool) (*Release, error) {
 	releaseRef := fmt.Sprintf("%s:%s-x86_64", sourceRegistry, version)
 
-	ref, err := name.ParseReference(releaseRef)
+	nameOpts := []name.Option{}
+	if insecure {
+		nameOpts = append(nameOpts, name.Insecure)
+	}
+
+	ref, err := name.ParseReference(releaseRef, nameOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("parsing release reference: %w", err)
 	}

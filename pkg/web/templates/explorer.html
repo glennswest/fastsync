@@ -1,0 +1,37 @@
+<div class="fade-in">
+    <div class="header">
+        <h2>Registry Explorer</h2>
+        <div class="header-actions">
+            <button class="btn btn-secondary btn-sm" hx-get="/view/explorer" hx-target="#main-content">
+                <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                Refresh
+            </button>
+        </div>
+    </div>
+    <div class="content">
+        <div style="display: grid; grid-template-columns: 300px 1fr; gap: 24px;">
+            <!-- Repository List -->
+            <div class="card" style="height: fit-content;">
+                <div class="card-header">
+                    <div class="card-title">Repositories</div>
+                </div>
+                <div class="form-group">
+                    <input type="text" class="form-input" placeholder="Search repositories..."
+                           hx-get="/api/registry/repos" hx-trigger="keyup changed delay:300ms"
+                           hx-target="#repo-list" name="search">
+                </div>
+                <div id="repo-list" class="tree-view" hx-get="/api/registry/repos" hx-trigger="load" hx-swap="innerHTML">
+                    <div class="empty-state">Loading...</div>
+                </div>
+            </div>
+
+            <!-- Repository Details -->
+            <div class="card" id="repo-details">
+                <div class="empty-state">
+                    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+                    <p>Select a repository to view its tags</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

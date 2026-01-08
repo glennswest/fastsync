@@ -1,0 +1,149 @@
+<div class="fade-in">
+    <div class="header">
+        <h2>Settings</h2>
+    </div>
+    <div class="content">
+        <!-- Subtabs -->
+        <div class="subtabs">
+            <div class="subtab active" onclick="showSettingsTab('general', this)">General</div>
+            <div class="subtab" onclick="showSettingsTab('registries', this)">Registries</div>
+            <div class="subtab" onclick="showSettingsTab('performance', this)">Performance</div>
+            <div class="subtab" onclick="showSettingsTab('auth', this)">Authentication</div>
+        </div>
+
+        <!-- General Settings -->
+        <div id="settingstab-general" class="settingstab-content">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">General Settings</div>
+                </div>
+                <form hx-post="/api/settings/general" hx-target="#settings-result" hx-swap="innerHTML">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Default Destination Registry</label>
+                            <input type="text" name="dest_registry" class="form-input" value="{{.Config.DestRegistry}}">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Default Repository Path</label>
+                            <input type="text" name="dest_repo" class="form-input" value="{{.Config.DestRepo}}">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">
+                            <input type="checkbox" name="insecure" {{if .Config.Insecure}}checked{{end}}> Allow insecure registry connections by default
+                        </label>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Save Settings</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Registry Settings -->
+        <div id="settingstab-registries" class="settingstab-content" style="display: none;">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">Registry Configuration</div>
+                    <button class="btn btn-primary btn-sm" onclick="addRegistry()">Add Registry</button>
+                </div>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Registry URL</th>
+                                <th>Type</th>
+                                <th>Insecure</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="registries-list" hx-get="/api/settings/registries" hx-trigger="load" hx-swap="innerHTML">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Performance Settings -->
+        <div id="settingstab-performance" class="settingstab-content" style="display: none;">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">Performance Tuning</div>
+                </div>
+                <form hx-post="/api/settings/performance" hx-target="#settings-result" hx-swap="innerHTML">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Parallel Image Workers</label>
+                            <input type="number" name="workers" class="form-input" value="{{.Config.Workers}}" min="1" max="64">
+                            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">
+                                Number of images to sync in parallel (default: 16)
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Parallel Blob Workers</label>
+                            <input type="number" name="blob_workers" class="form-input" value="{{.Config.BlobWorkers}}" min="1" max="16">
+                            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">
+                                Number of blob uploads per image (default: 4)
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Max Retries</label>
+                        <input type="number" name="max_retries" class="form-input" value="{{.Config.MaxRetries}}" min="1" max="10" style="max-width: 200px;">
+                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">
+                            Number of retry attempts for failed operations (default: 3)
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Save Settings</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Authentication Settings -->
+        <div id="settingstab-auth" class="settingstab-content" style="display: none;">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">Pull Secret</div>
+                </div>
+                <form hx-post="/api/settings/pullsecret" hx-target="#settings-result" hx-swap="innerHTML" hx-encoding="multipart/form-data">
+                    <div class="form-group">
+                        <label class="form-label">Upload Pull Secret (JSON)</label>
+                        <input type="file" name="pullsecret" class="form-input" accept=".json">
+                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">
+                            Required for syncing from quay.io. Download from <a href="https://console.redhat.com/openshift/install/pull-secret" target="_blank" style="color: var(--accent);">Red Hat Console</a>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Or paste pull secret content</label>
+                        <textarea name="pullsecret_content" class="form-input" rows="6" placeholder='{"auths": {...}}'></textarea>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Save Pull Secret</button>
+                </form>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">Current Authentication Status</div>
+                </div>
+                <div id="auth-status" hx-get="/api/settings/auth-status" hx-trigger="load" hx-swap="innerHTML">
+                    Loading...
+                </div>
+            </div>
+        </div>
+
+        <!-- Settings Result -->
+        <div id="settings-result" style="margin-top: 20px;"></div>
+    </div>
+</div>
+
+<script>
+function showSettingsTab(id, el) {
+    document.querySelectorAll('.settingstab-content').forEach(c => c.style.display = 'none');
+    document.querySelectorAll('.subtab').forEach(t => t.classList.remove('active'));
+    document.getElementById('settingstab-' + id).style.display = 'block';
+    el.classList.add('active');
+}
+
+function addRegistry() {
+    // Show modal or inline form to add registry
+    alert('Add registry dialog would appear here');
+}
+</script>

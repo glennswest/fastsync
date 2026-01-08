@@ -1,0 +1,152 @@
+<div class="fade-in">
+    <div class="header">
+        <h2>OpenShift Release Sync</h2>
+    </div>
+    <div class="content">
+        <!-- Subtabs -->
+        <div class="subtabs">
+            <div class="subtab active" onclick="showSubtab('from-quay', this)">From Quay.io</div>
+            <div class="subtab" onclick="showSubtab('from-local', this)">From Local Registry</div>
+            <div class="subtab" onclick="showSubtab('available', this)">Available Versions</div>
+        </div>
+
+        <!-- From Quay.io -->
+        <div id="subtab-from-quay" class="subtab-content">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">Sync from Quay.io (Red Hat Official)</div>
+                </div>
+                <form hx-post="/api/sync" hx-target="#sync-result" hx-swap="innerHTML">
+                    <input type="hidden" name="source" value="quay.io/openshift-release-dev/ocp-release">
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">OpenShift Version</label>
+                            <input type="text" name="version" class="form-input" placeholder="e.g., 4.18.30" required>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Destination Registry</label>
+                            <input type="text" name="dest" class="form-input" placeholder="e.g., registry.local:5000"
+                                   value="{{.DestRegistry}}" required>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Destination Repository</label>
+                            <input type="text" name="dest_repo" class="form-input" value="openshift/release">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Pull Secret Path</label>
+                            <input type="text" name="pull_secret" class="form-input" placeholder="/path/to/pull-secret.json">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">
+                            <input type="checkbox" name="insecure" value="true" checked> Allow insecure registry connections
+                        </label>
+                    </div>
+                    <div style="display: flex; gap: 12px; margin-top: 20px;">
+                        <button type="submit" class="btn btn-primary">
+                            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"/></svg>
+                            Start Sync
+                        </button>
+                        <span class="htmx-indicator"><div class="spinner"></div></span>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- From Local Registry -->
+        <div id="subtab-from-local" class="subtab-content" style="display: none;">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">Sync from Local Registry</div>
+                </div>
+                <form hx-post="/api/sync" hx-target="#sync-result" hx-swap="innerHTML">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Source Registry</label>
+                            <input type="text" name="source" class="form-input" placeholder="e.g., registry.gw.lo/openshift/release" required>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">OpenShift Version</label>
+                            <input type="text" name="version" class="form-input" placeholder="e.g., 4.18.30" required>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Destination Registry</label>
+                            <input type="text" name="dest" class="form-input" placeholder="e.g., fastregistry.gw.lo:5000" required>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Destination Repository</label>
+                            <input type="text" name="dest_repo" class="form-input" value="openshift/release">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">
+                            <input type="checkbox" name="insecure" value="true" checked> Allow insecure registry connections
+                        </label>
+                    </div>
+                    <div style="display: flex; gap: 12px; margin-top: 20px;">
+                        <button type="submit" class="btn btn-primary">
+                            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"/></svg>
+                            Start Sync
+                        </button>
+                        <span class="htmx-indicator"><div class="spinner"></div></span>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Available Versions -->
+        <div id="subtab-available" class="subtab-content" style="display: none;">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">Available OpenShift Versions</div>
+                    <button class="btn btn-secondary btn-sm" hx-get="/api/openshift/versions" hx-target="#versions-grid">
+                        <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                        Refresh
+                    </button>
+                </div>
+                <div class="form-row" style="margin-bottom: 20px;">
+                    <div class="form-group">
+                        <label class="form-label">Filter by Channel</label>
+                        <select class="form-select" hx-get="/api/openshift/versions" hx-target="#versions-grid" name="channel">
+                            <option value="">All Channels</option>
+                            <option value="stable">Stable</option>
+                            <option value="fast">Fast</option>
+                            <option value="candidate">Candidate</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Filter by Minor Version</label>
+                        <select class="form-select" hx-get="/api/openshift/versions" hx-target="#versions-grid" name="minor">
+                            <option value="">All Versions</option>
+                            <option value="4.18">4.18</option>
+                            <option value="4.17">4.17</option>
+                            <option value="4.16">4.16</option>
+                            <option value="4.15">4.15</option>
+                            <option value="4.14">4.14</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="versions-grid" class="version-grid" hx-get="/api/openshift/versions" hx-trigger="load">
+                    <div class="empty-state">Loading available versions...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sync Result -->
+        <div id="sync-result"></div>
+    </div>
+</div>
+
+<script>
+function showSubtab(id, el) {
+    document.querySelectorAll('.subtab-content').forEach(c => c.style.display = 'none');
+    document.querySelectorAll('.subtab').forEach(t => t.classList.remove('active'));
+    document.getElementById('subtab-' + id).style.display = 'block';
+    el.classList.add('active');
+}
+</script>

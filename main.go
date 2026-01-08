@@ -17,6 +17,7 @@ import (
 	"fastsync/pkg/mirror"
 	"fastsync/pkg/release"
 	"fastsync/pkg/version"
+	"fastsync/pkg/web"
 )
 
 const (
@@ -44,6 +45,8 @@ func main() {
 		sourceRegistry = flag.String("source-registry", defaultSourceRegistry, "Source registry for release images")
 		insecure       = flag.Bool("insecure", false, "Allow insecure registry connections")
 		showVersion    = flag.Bool("v", false, "Show version information")
+		webMode        = flag.Bool("web", false, "Start web GUI mode")
+		webPort        = flag.Int("port", 8080, "Web GUI port (default 8080)")
 	)
 	flag.Parse()
 
@@ -52,6 +55,30 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Load pull secret (optional for local registries)
+	var keychain authn.Keychain
+	if *pullSecretPath != "" {
+		var err error
+		keychain, err = loadPullSecret(*pullSecretPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading pull secret: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		keychain = authn.DefaultKeychain
+	}
+
+	// Web GUI mode
+	if *webMode {
+		server := web.NewServer(*webPort, keychain, *insecure, *workers, *blobWorkers, *destRepo)
+		if err := server.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error starting web server: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// CLI mode - require version and dest-registry
 	if *ocpVersion == "" {
 		fmt.Fprintln(os.Stderr, "Error: --version is required")
 		flag.Usage()
@@ -60,18 +87,6 @@ func main() {
 	if *destRegistry == "" {
 		fmt.Fprintln(os.Stderr, "Error: --dest-registry is required")
 		flag.Usage()
-		os.Exit(1)
-	}
-	if *pullSecretPath == "" {
-		fmt.Fprintln(os.Stderr, "Error: --pull-secret is required")
-		flag.Usage()
-		os.Exit(1)
-	}
-
-	// Load pull secret
-	keychain, err := loadPullSecret(*pullSecretPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading pull secret: %v\n", err)
 		os.Exit(1)
 	}
 

@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"math/rand"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,6 +21,7 @@ import (
 const (
 	maxRetries    = 3
 	retryBaseWait = 2 * time.Second
+	maxJitter     = 500 // milliseconds
 )
 
 // Progress tracks mirror progress
@@ -48,12 +51,22 @@ type Engine struct {
 	Insecure     bool
 	Progress     *Progress
 	OnResult     func(Result)
+
+	// manifestSem limits concurrent manifest writes to avoid transaction conflicts
+	// Blob uploads remain fully parallel, only the final manifest push is serialized
+	manifestSem chan struct{}
 }
 
 // NewEngine creates a new mirror engine
 func NewEngine(workers, blobWorkers int, destRegistry, destRepo string, keychain authn.Keychain, insecure bool) *Engine {
 	if blobWorkers < 1 {
 		blobWorkers = 4
+	}
+	// Allow some concurrent manifest writes but limit to reduce conflicts
+	// 4 concurrent manifest writes is a good balance
+	manifestConcurrency := 4
+	if workers < manifestConcurrency {
+		manifestConcurrency = workers
 	}
 	return &Engine{
 		Workers:      workers,
@@ -63,6 +76,7 @@ func NewEngine(workers, blobWorkers int, destRegistry, destRepo string, keychain
 		Keychain:     keychain,
 		Insecure:     insecure,
 		Progress:     &Progress{},
+		manifestSem:  make(chan struct{}, manifestConcurrency),
 	}
 }
 
@@ -154,8 +168,12 @@ func (e *Engine) mirrorImage(ctx context.Context, comp release.ComponentImage) R
 		Source:    comp.Image,
 	}
 
-	// Parse source reference
-	srcRef, err := name.ParseReference(comp.Image)
+	// Parse source reference with insecure option if needed
+	srcOpts := []name.Option{}
+	if e.Insecure {
+		srcOpts = append(srcOpts, name.Insecure)
+	}
+	srcRef, err := name.ParseReference(comp.Image, srcOpts...)
 	if err != nil {
 		result.Error = fmt.Errorf("parsing source reference: %w", err)
 		return result
@@ -167,15 +185,19 @@ func (e *Engine) mirrorImage(ctx context.Context, comp release.ComponentImage) R
 	destRefStr := fmt.Sprintf("%s/%s:%s", e.DestRegistry, e.DestRepo, comp.Name)
 	result.Dest = destRefStr
 
-	destRef, err := name.ParseReference(destRefStr)
+	destOpts := []name.Option{}
+	if e.Insecure {
+		destOpts = append(destOpts, name.Insecure)
+	}
+	destRef, err := name.ParseReference(destRefStr, destOpts...)
 	if err != nil {
 		result.Error = fmt.Errorf("parsing dest reference: %w", err)
 		return result
 	}
 
-	// Build options
-	srcOpts := []remote.Option{remote.WithAuthFromKeychain(e.Keychain), remote.WithContext(ctx)}
-	destOpts := []remote.Option{
+	// Build remote options
+	srcRemoteOpts := []remote.Option{remote.WithAuthFromKeychain(e.Keychain), remote.WithContext(ctx)}
+	destRemoteOpts := []remote.Option{
 		remote.WithAuthFromKeychain(e.Keychain),
 		remote.WithContext(ctx),
 		remote.WithJobs(e.BlobWorkers), // parallel blob uploads
@@ -185,8 +207,8 @@ func (e *Engine) mirrorImage(ctx context.Context, comp release.ComponentImage) R
 		transport := &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		}
-		srcOpts = append(srcOpts, remote.WithTransport(transport))
-		destOpts = append(destOpts, remote.WithTransport(transport))
+		srcRemoteOpts = append(srcRemoteOpts, remote.WithTransport(transport))
+		destRemoteOpts = append(destRemoteOpts, remote.WithTransport(transport))
 	}
 
 	// Get expected digest from source reference
@@ -197,18 +219,29 @@ func (e *Engine) mirrorImage(ctx context.Context, comp release.ComponentImage) R
 
 	// Check if image already exists at destination with correct digest
 	if expectedDigest != "" {
-		if e.verifyImageDigest(ctx, destRef, expectedDigest, destOpts) {
+		if e.verifyImageDigest(ctx, destRef, expectedDigest, destRemoteOpts) {
 			result.Skipped = true
 			return result
 		}
 	}
 
-	// Retry loop for fetch and push
+	// Fetch source image first (this can happen in parallel)
+	img, err := remote.Image(srcRef, srcRemoteOpts...)
+	if err != nil {
+		result.Error = fmt.Errorf("fetching source: %w", err)
+		return result
+	}
+
+	// Push with smart retry logic for transaction conflicts
 	var lastErr error
+	totalAttempts := 0
+
 	for attempt := 0; attempt < maxRetries; attempt++ {
+		totalAttempts++
 		if attempt > 0 {
-			// Exponential backoff: 2s, 4s, 8s...
+			// Exponential backoff with jitter
 			wait := retryBaseWait * time.Duration(1<<(attempt-1))
+			wait += time.Duration(rand.Intn(maxJitter)) * time.Millisecond
 			select {
 			case <-time.After(wait):
 			case <-ctx.Done():
@@ -217,22 +250,39 @@ func (e *Engine) mirrorImage(ctx context.Context, comp release.ComponentImage) R
 			}
 		}
 
-		// Fetch source image
-		img, err := remote.Image(srcRef, srcOpts...)
-		if err != nil {
-			lastErr = fmt.Errorf("fetching source: %w", err)
-			continue
+		// Acquire manifest semaphore to limit concurrent writes
+		select {
+		case e.manifestSem <- struct{}{}:
+		case <-ctx.Done():
+			result.Error = ctx.Err()
+			return result
 		}
 
 		// Push to destination with parallel blob uploads
-		if err := remote.Write(destRef, img, destOpts...); err != nil {
+		err := remote.Write(destRef, img, destRemoteOpts...)
+
+		// Release semaphore
+		<-e.manifestSem
+
+		if err != nil {
+			// Check for transaction conflict - likely means another worker already wrote it
+			if isTransactionConflict(err) {
+				// Just check if the image exists with correct digest - if so, we're done
+				if expectedDigest != "" && e.verifyImageDigest(ctx, destRef, expectedDigest, destRemoteOpts) {
+					// Image exists with correct digest - another worker wrote it, success!
+					return result
+				}
+				// Image doesn't exist or wrong digest, add small jitter and retry
+				jitter := time.Duration(50+rand.Intn(200)) * time.Millisecond
+				time.Sleep(jitter)
+			}
 			lastErr = fmt.Errorf("writing to dest: %w", err)
 			continue
 		}
 
 		// Verify the image was written with correct digest
 		if expectedDigest != "" {
-			if !e.verifyImageDigest(ctx, destRef, expectedDigest, destOpts) {
+			if !e.verifyImageDigest(ctx, destRef, expectedDigest, destRemoteOpts) {
 				lastErr = fmt.Errorf("verification failed: digest mismatch after write")
 				continue
 			}
@@ -242,18 +292,35 @@ func (e *Engine) mirrorImage(ctx context.Context, comp release.ComponentImage) R
 		return result
 	}
 
-	result.Error = fmt.Errorf("after %d attempts: %w", maxRetries, lastErr)
+	result.Error = fmt.Errorf("after %d attempts: %w", totalAttempts, lastErr)
 	return result
 }
 
+// isTransactionConflict checks if the error is a registry transaction conflict
+func isTransactionConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "Transaction Conflict") ||
+		strings.Contains(errStr, "MANIFEST_INVALID") ||
+		strings.Contains(errStr, "concurrent") ||
+		strings.Contains(errStr, "conflict")
+}
+
 func (e *Engine) mirrorReleaseImage(ctx context.Context, rel *release.Release) error {
-	srcRef, err := name.ParseReference(rel.SourceRef)
+	nameOpts := []name.Option{}
+	if e.Insecure {
+		nameOpts = append(nameOpts, name.Insecure)
+	}
+
+	srcRef, err := name.ParseReference(rel.SourceRef, nameOpts...)
 	if err != nil {
 		return fmt.Errorf("parsing source: %w", err)
 	}
 
 	destRefStr := fmt.Sprintf("%s/%s:%s-x86_64", e.DestRegistry, e.DestRepo, rel.Version)
-	destRef, err := name.ParseReference(destRefStr)
+	destRef, err := name.ParseReference(destRefStr, nameOpts...)
 	if err != nil {
 		return fmt.Errorf("parsing dest: %w", err)
 	}
@@ -272,11 +339,23 @@ func (e *Engine) mirrorReleaseImage(ctx context.Context, rel *release.Release) e
 		destOpts = append(destOpts, remote.WithTransport(transport))
 	}
 
-	// Retry loop for fetch and push
+	// Fetch and rewrite source image
+	img, err := remote.Image(srcRef, srcOpts...)
+	if err != nil {
+		return fmt.Errorf("fetching: %w", err)
+	}
+
+	rewrittenImg, err := release.CreateRewrittenReleaseImage(img, e.DestRegistry, e.DestRepo)
+	if err != nil {
+		return fmt.Errorf("rewriting image references: %w", err)
+	}
+
+	// Retry loop for push with conflict handling
 	var lastErr error
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
 			wait := retryBaseWait * time.Duration(1<<(attempt-1))
+			wait += time.Duration(rand.Intn(maxJitter)) * time.Millisecond
 			select {
 			case <-time.After(wait):
 			case <-ctx.Done():
@@ -284,20 +363,29 @@ func (e *Engine) mirrorReleaseImage(ctx context.Context, rel *release.Release) e
 			}
 		}
 
-		img, err := remote.Image(srcRef, srcOpts...)
-		if err != nil {
-			lastErr = fmt.Errorf("fetching: %w", err)
-			continue
+		// Acquire manifest semaphore
+		select {
+		case e.manifestSem <- struct{}{}:
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 
-		// Rewrite image references to point to destination registry
-		rewrittenImg, err := release.CreateRewrittenReleaseImage(img, e.DestRegistry, e.DestRepo)
-		if err != nil {
-			lastErr = fmt.Errorf("rewriting image references: %w", err)
-			continue
-		}
+		err := remote.Write(destRef, rewrittenImg, destOpts...)
 
-		if err := remote.Write(destRef, rewrittenImg, destOpts...); err != nil {
+		// Release semaphore
+		<-e.manifestSem
+
+		if err != nil {
+			// Check for transaction conflict - likely means another worker already wrote it
+			if isTransactionConflict(err) {
+				// Just check if the image exists - if so, we're done
+				if e.verifyImageExists(ctx, destRef, destOpts) {
+					return nil
+				}
+				// Image doesn't exist, add small jitter and retry
+				jitter := time.Duration(50+rand.Intn(200)) * time.Millisecond
+				time.Sleep(jitter)
+			}
 			lastErr = fmt.Errorf("writing release image: %w", err)
 			continue
 		}

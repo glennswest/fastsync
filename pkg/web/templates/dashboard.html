@@ -1,0 +1,35 @@
+<div class="fade-in">
+    <div class="header">
+        <h2>Dashboard</h2>
+        <div class="header-actions">
+            <button class="btn btn-secondary btn-sm" hx-get="/view/dashboard" hx-target="#main-content">
+                <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                Refresh
+            </button>
+        </div>
+    </div>
+    <div class="content">
+        <!-- Stats -->
+        <div class="stats-grid" hx-get="/api/registry/stats" hx-trigger="load" hx-swap="innerHTML">
+            <div class="stat-card">
+                <div class="stat-label">Loading...</div>
+                <div class="stat-value">-</div>
+            </div>
+        </div>
+
+        <!-- Current Sync Job -->
+        <div class="card" id="current-job" hx-get="/api/jobs/current" hx-trigger="load, every 2s" hx-swap="innerHTML">
+        </div>
+
+        <!-- Recent Activity -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">Recent Sync Jobs</div>
+                <a class="btn btn-secondary btn-sm" hx-get="/view/jobs" hx-target="#main-content">View All</a>
+            </div>
+            <div class="table-container" hx-get="/api/jobs/recent" hx-trigger="load" hx-swap="innerHTML">
+                <div class="empty-state">Loading...</div>
+            </div>
+        </div>
+    </div>
+</div>

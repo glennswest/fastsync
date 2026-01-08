@@ -1,0 +1,86 @@
+<div class="fade-in">
+    <div class="header">
+        <h2>Logs</h2>
+        <div class="header-actions">
+            <button class="btn btn-secondary btn-sm" onclick="clearLogs()">
+                <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                Clear Logs
+            </button>
+            <button class="btn btn-secondary btn-sm" hx-get="/view/logs" hx-target="#main-content">
+                <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                Refresh
+            </button>
+        </div>
+    </div>
+    <div class="content">
+        <!-- Subtabs -->
+        <div class="subtabs">
+            <div class="subtab active" onclick="showLogTab('sync', this)">Sync Logs</div>
+            <div class="subtab" onclick="showLogTab('system', this)">System Logs</div>
+            <div class="subtab" onclick="showLogTab('errors', this)">Errors Only</div>
+        </div>
+
+        <!-- Sync Logs -->
+        <div id="logtab-sync" class="logtab-content">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">Sync Operation Logs</div>
+                    <div>
+                        <label class="form-label" style="display: inline-flex; align-items: center; gap: 8px;">
+                            <input type="checkbox" id="auto-scroll" checked> Auto-scroll
+                        </label>
+                    </div>
+                </div>
+                <div id="sync-logs" class="log-container" hx-get="/api/logs/sync" hx-trigger="load, every 2s" hx-swap="innerHTML">
+                    <div class="log-entry">Loading logs...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- System Logs -->
+        <div id="logtab-system" class="logtab-content" style="display: none;">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">System Logs</div>
+                </div>
+                <div id="system-logs" class="log-container" hx-get="/api/logs/system" hx-trigger="load" hx-swap="innerHTML">
+                    <div class="log-entry">Loading logs...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Errors Only -->
+        <div id="logtab-errors" class="logtab-content" style="display: none;">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">Error Logs</div>
+                </div>
+                <div id="error-logs" class="log-container" hx-get="/api/logs/errors" hx-trigger="load" hx-swap="innerHTML">
+                    <div class="log-entry">Loading logs...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function showLogTab(id, el) {
+    document.querySelectorAll('.logtab-content').forEach(c => c.style.display = 'none');
+    document.querySelectorAll('.subtab').forEach(t => t.classList.remove('active'));
+    document.getElementById('logtab-' + id).style.display = 'block';
+    el.classList.add('active');
+}
+
+function clearLogs() {
+    fetch('/api/logs/clear', { method: 'POST' })
+        .then(() => htmx.ajax('GET', '/view/logs', '#main-content'));
+}
+
+// Auto-scroll
+document.addEventListener('htmx:afterSwap', function(evt) {
+    if (document.getElementById('auto-scroll')?.checked) {
+        const logs = document.getElementById('sync-logs');
+        if (logs) logs.scrollTop = logs.scrollHeight;
+    }
+});
+</script>
