@@ -6,7 +6,7 @@
         <!-- Subtabs -->
         <div class="subtabs">
             <div class="subtab active" onclick="showSettingsTab('general', this)">General</div>
-            <div class="subtab" onclick="showSettingsTab('registries', this)">Registries</div>
+            <div class="subtab" onclick="showSettingsTab('autosync', this)">Auto-Sync</div>
             <div class="subtab" onclick="showSettingsTab('performance', this)">Performance</div>
             <div class="subtab" onclick="showSettingsTab('auth', this)">Authentication</div>
         </div>
@@ -22,6 +22,9 @@
                         <div class="form-group">
                             <label class="form-label">Default Destination Registry</label>
                             <input type="text" name="dest_registry" class="form-input" value="{{.Config.DestRegistry}}">
+                            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">
+                                All syncs will use this registry by default
+                            </div>
                         </div>
                         <div class="form-group">
                             <label class="form-label">Default Repository Path</label>
@@ -30,7 +33,7 @@
                     </div>
                     <div class="form-group">
                         <label class="form-label">
-                            <input type="checkbox" name="insecure" {{if .Config.Insecure}}checked{{end}}> Allow insecure registry connections by default
+                            <input type="checkbox" name="insecure" {{if .Config.Insecure}}checked{{end}}> Allow insecure registry connections (HTTP)
                         </label>
                     </div>
                     <button type="submit" class="btn btn-primary">Save Settings</button>
@@ -38,28 +41,48 @@
             </div>
         </div>
 
-        <!-- Registry Settings -->
-        <div id="settingstab-registries" class="settingstab-content" style="display: none;">
+        <!-- Auto-Sync Settings -->
+        <div id="settingstab-autosync" class="settingstab-content" style="display: none;">
             <div class="card">
                 <div class="card-header">
-                    <div class="card-title">Registry Configuration</div>
-                    <button class="btn btn-primary btn-sm" onclick="addRegistry()">Add Registry</button>
+                    <div class="card-title">Add Auto-Sync Rule</div>
                 </div>
-                <div class="table-container">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Registry URL</th>
-                                <th>Type</th>
-                                <th>Insecure</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id="registries-list" hx-get="/api/settings/registries" hx-trigger="load" hx-swap="innerHTML">
-                        </tbody>
-                    </table>
+                <form hx-post="/api/autosync/add" hx-target="#autosync-result" hx-swap="innerHTML">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Base Version</label>
+                            <input type="text" name="base_version" class="form-input" placeholder="4.18" style="max-width: 150px;">
+                            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">
+                                e.g., 4.18, 4.19, 4.20
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Keep Latest</label>
+                            <input type="number" name="keep_latest" class="form-input" value="3" min="1" max="20" style="max-width: 100px;">
+                            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">
+                                Number of latest releases to keep synced
+                            </div>
+                        </div>
+                        <div class="form-group" style="display: flex; align-items: flex-end;">
+                            <button type="submit" class="btn btn-primary">Add Rule</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">Auto-Sync Rules</div>
+                    <div style="font-size: 0.8rem; color: var(--text-muted);">
+                        Checks every {{.Config.CheckInterval}} minutes for new releases
+                    </div>
+                </div>
+                <div class="table-container" id="autosync-rules" hx-get="/api/autosync/rules" hx-trigger="load" hx-swap="innerHTML">
+                    Loading...
                 </div>
             </div>
+
+            <div id="autosync-result" style="margin-top: 20px;"></div>
         </div>
 
         <!-- Performance Settings -->
@@ -140,10 +163,5 @@ function showSettingsTab(id, el) {
     document.querySelectorAll('.subtab').forEach(t => t.classList.remove('active'));
     document.getElementById('settingstab-' + id).style.display = 'block';
     el.classList.add('active');
-}
-
-function addRegistry() {
-    // Show modal or inline form to add registry
-    alert('Add registry dialog would appear here');
 }
 </script>

@@ -27,14 +27,25 @@ import (
 //go:embed templates/*
 var templates embed.FS
 
+// AutoSyncRule defines a rule for auto-syncing releases
+type AutoSyncRule struct {
+	BaseVersion string `json:"base_version"` // e.g., "4.18", "4.19"
+	KeepLatest  int    `json:"keep_latest"`  // how many latest releases to keep synced
+	Enabled     bool   `json:"enabled"`
+	LastCheck   time.Time `json:"last_check"`
+	LastSync    string    `json:"last_sync"` // last synced version
+}
+
 // Config holds server configuration
 type Config struct {
-	DestRegistry string
-	DestRepo     string
-	Workers      int
-	BlobWorkers  int
-	MaxRetries   int
-	Insecure     bool
+	DestRegistry  string         `json:"dest_registry"`
+	DestRepo      string         `json:"dest_repo"`
+	Workers       int            `json:"workers"`
+	BlobWorkers   int            `json:"blob_workers"`
+	MaxRetries    int            `json:"max_retries"`
+	Insecure      bool           `json:"insecure"`
+	AutoSyncRules []AutoSyncRule `json:"auto_sync_rules"`
+	CheckInterval int            `json:"check_interval"` // minutes between auto-sync checks
 }
 
 // SyncJob tracks a sync operation
@@ -70,30 +81,39 @@ type Server struct {
 	Keychain authn.Keychain
 	Config   Config
 
-	mu         sync.RWMutex
-	jobs       map[string]*SyncJob
-	current    *SyncJob
-	cancel     context.CancelFunc
-	systemLogs []LogEntry
-	tmpl       *template.Template
+	mu            sync.RWMutex
+	jobs          map[string]*SyncJob
+	current       *SyncJob
+	cancel        context.CancelFunc
+	systemLogs    []LogEntry
+	tmpl          *template.Template
+	autoSyncStop  chan struct{}
+	syncedVersions map[string]bool // tracks which versions are already synced
 }
 
 // NewServer creates a new web server
 func NewServer(port int, keychain authn.Keychain, insecure bool, workers, blobWorkers int, destRepo string) *Server {
-	return &Server{
+	s := &Server{
 		Port:     port,
 		Keychain: keychain,
 		Config: Config{
-			DestRegistry: "",
-			DestRepo:     destRepo,
-			Workers:      workers,
-			BlobWorkers:  blobWorkers,
-			MaxRetries:   3,
-			Insecure:     insecure,
+			DestRegistry:  "fastregistry.gw.lo:5000", // default destination
+			DestRepo:      destRepo,
+			Workers:       workers,
+			BlobWorkers:   blobWorkers,
+			MaxRetries:    3,
+			Insecure:      insecure,
+			AutoSyncRules: []AutoSyncRule{},
+			CheckInterval: 60, // check every hour by default
 		},
-		jobs:       make(map[string]*SyncJob),
-		systemLogs: []LogEntry{},
+		jobs:           make(map[string]*SyncJob),
+		systemLogs:     []LogEntry{},
+		syncedVersions: make(map[string]bool),
 	}
+	if s.Config.DestRepo == "" {
+		s.Config.DestRepo = "openshift/release"
+	}
+	return s
 }
 
 // Start starts the web server
@@ -149,6 +169,16 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/settings/pullsecret", s.handleSettingsPullSecret)
 	mux.HandleFunc("/api/settings/auth-status", s.handleSettingsAuthStatus)
 	mux.HandleFunc("/api/settings/registries", s.handleSettingsRegistries)
+
+	// Auto-sync API
+	mux.HandleFunc("/api/autosync/rules", s.handleAutoSyncRules)
+	mux.HandleFunc("/api/autosync/add", s.handleAutoSyncAdd)
+	mux.HandleFunc("/api/autosync/delete", s.handleAutoSyncDelete)
+	mux.HandleFunc("/api/autosync/toggle", s.handleAutoSyncToggle)
+	mux.HandleFunc("/api/autosync/check", s.handleAutoSyncCheck)
+
+	// Start auto-sync background checker
+	s.startAutoSyncChecker()
 
 	s.logSystem("info", "FastSync web server starting on port %d", s.Port)
 
@@ -1190,7 +1220,7 @@ func (s *Server) handleSettingsAuthStatus(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleSettingsRegistries(w http.ResponseWriter, r *http.Request) {
 	// Return configured registries
-	html := `
+	html := fmt.Sprintf(`
 		<tr>
 			<td>quay.io</td>
 			<td>Source</td>
@@ -1198,12 +1228,379 @@ func (s *Server) handleSettingsRegistries(w http.ResponseWriter, r *http.Request
 			<td><button class="btn btn-secondary btn-sm">Test</button></td>
 		</tr>
 		<tr>
-			<td>fastregistry.gw.lo:5000</td>
+			<td>%s</td>
 			<td>Destination</td>
 			<td><span class="badge badge-warning">HTTP</span></td>
 			<td><button class="btn btn-secondary btn-sm">Test</button></td>
 		</tr>
-	`
+	`, s.Config.DestRegistry)
 	w.Header().Set("Content-Type", "text/html")
 	w.Write([]byte(html))
+}
+
+// Auto-sync handlers
+func (s *Server) handleAutoSyncRules(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	rules := s.Config.AutoSyncRules
+	s.mu.RUnlock()
+
+	if len(rules) == 0 {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`<div class="empty-state">No auto-sync rules configured. Add a rule to automatically sync new releases.</div>`))
+		return
+	}
+
+	var html strings.Builder
+	html.WriteString(`<table><thead><tr><th>Base Version</th><th>Keep Latest</th><th>Status</th><th>Last Sync</th><th>Actions</th></tr></thead><tbody>`)
+
+	for i, rule := range rules {
+		statusBadge := "badge-secondary"
+		statusText := "Disabled"
+		if rule.Enabled {
+			statusBadge = "badge-success"
+			statusText = "Enabled"
+		}
+		lastSync := rule.LastSync
+		if lastSync == "" {
+			lastSync = "Never"
+		}
+		html.WriteString(fmt.Sprintf(`
+			<tr>
+				<td><strong>%s</strong></td>
+				<td>%d</td>
+				<td><span class="badge %s">%s</span></td>
+				<td>%s</td>
+				<td>
+					<button class="btn btn-secondary btn-sm" hx-post="/api/autosync/toggle?index=%d" hx-target="#autosync-rules" hx-swap="innerHTML">%s</button>
+					<button class="btn btn-danger btn-sm" hx-post="/api/autosync/delete?index=%d" hx-target="#autosync-rules" hx-swap="innerHTML">Delete</button>
+					<button class="btn btn-primary btn-sm" hx-post="/api/autosync/check?index=%d" hx-target="#autosync-result" hx-swap="innerHTML">Check Now</button>
+				</td>
+			</tr>
+		`, rule.BaseVersion, rule.KeepLatest, statusBadge, statusText, lastSync, i, map[bool]string{true: "Disable", false: "Enable"}[rule.Enabled], i, i))
+	}
+
+	html.WriteString(`</tbody></table>`)
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(html.String()))
+}
+
+func (s *Server) handleAutoSyncAdd(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	r.ParseForm()
+	baseVersion := r.FormValue("base_version")
+	keepLatest := 3 // default
+	fmt.Sscanf(r.FormValue("keep_latest"), "%d", &keepLatest)
+
+	if baseVersion == "" {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`<div class="card" style="background: rgba(239,68,68,0.1); border-color: var(--danger);"><div class="card-title" style="color: var(--danger);">Base version is required (e.g., 4.18)</div></div>`))
+		return
+	}
+
+	// Validate format
+	if !strings.HasPrefix(baseVersion, "4.") {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`<div class="card" style="background: rgba(239,68,68,0.1); border-color: var(--danger);"><div class="card-title" style="color: var(--danger);">Base version should be like 4.18, 4.19, etc.</div></div>`))
+		return
+	}
+
+	if keepLatest < 1 || keepLatest > 20 {
+		keepLatest = 3
+	}
+
+	s.mu.Lock()
+	// Check if rule already exists
+	for _, rule := range s.Config.AutoSyncRules {
+		if rule.BaseVersion == baseVersion {
+			s.mu.Unlock()
+			w.Header().Set("Content-Type", "text/html")
+			w.Write([]byte(fmt.Sprintf(`<div class="card" style="background: rgba(234,179,8,0.1); border-color: var(--warning);"><div class="card-title" style="color: var(--warning);">Rule for %s already exists</div></div>`, baseVersion)))
+			return
+		}
+	}
+
+	s.Config.AutoSyncRules = append(s.Config.AutoSyncRules, AutoSyncRule{
+		BaseVersion: baseVersion,
+		KeepLatest:  keepLatest,
+		Enabled:     true,
+	})
+	s.mu.Unlock()
+
+	s.logSystem("info", "Added auto-sync rule for %s (keep latest %d)", baseVersion, keepLatest)
+
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(fmt.Sprintf(`<div class="card" style="background: rgba(34,197,94,0.1); border-color: var(--success);"><div class="card-title" style="color: var(--success);">Auto-sync rule added for %s (keeping latest %d releases)</div></div>`, baseVersion, keepLatest)))
+}
+
+func (s *Server) handleAutoSyncDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	index := 0
+	fmt.Sscanf(r.URL.Query().Get("index"), "%d", &index)
+
+	s.mu.Lock()
+	if index >= 0 && index < len(s.Config.AutoSyncRules) {
+		s.Config.AutoSyncRules = append(s.Config.AutoSyncRules[:index], s.Config.AutoSyncRules[index+1:]...)
+	}
+	s.mu.Unlock()
+
+	s.handleAutoSyncRules(w, r)
+}
+
+func (s *Server) handleAutoSyncToggle(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	index := 0
+	fmt.Sscanf(r.URL.Query().Get("index"), "%d", &index)
+
+	s.mu.Lock()
+	if index >= 0 && index < len(s.Config.AutoSyncRules) {
+		s.Config.AutoSyncRules[index].Enabled = !s.Config.AutoSyncRules[index].Enabled
+	}
+	s.mu.Unlock()
+
+	s.handleAutoSyncRules(w, r)
+}
+
+func (s *Server) handleAutoSyncCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	index := 0
+	fmt.Sscanf(r.URL.Query().Get("index"), "%d", &index)
+
+	s.mu.RLock()
+	if index < 0 || index >= len(s.Config.AutoSyncRules) {
+		s.mu.RUnlock()
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`<div class="card" style="background: rgba(239,68,68,0.1); border-color: var(--danger);"><div class="card-title" style="color: var(--danger);">Invalid rule index</div></div>`))
+		return
+	}
+	rule := s.Config.AutoSyncRules[index]
+	s.mu.RUnlock()
+
+	// Check for new versions
+	versionsToSync, err := s.checkForNewVersions(rule)
+	if err != nil {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(fmt.Sprintf(`<div class="card" style="background: rgba(239,68,68,0.1); border-color: var(--danger);"><div class="card-title" style="color: var(--danger);">Error checking versions: %s</div></div>`, err.Error())))
+		return
+	}
+
+	if len(versionsToSync) == 0 {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(fmt.Sprintf(`<div class="card" style="background: rgba(34,197,94,0.1); border-color: var(--success);"><div class="card-title" style="color: var(--success);">All %s releases are up to date!</div></div>`, rule.BaseVersion)))
+		return
+	}
+
+	// Start syncing the first missing version
+	version := versionsToSync[0]
+	go s.startAutoSync(version, index)
+
+	var html strings.Builder
+	html.WriteString(fmt.Sprintf(`<div class="card" style="background: rgba(59,130,246,0.1); border-color: var(--info);"><div class="card-title" style="color: var(--info);">Found %d versions to sync for %s</div>`, len(versionsToSync), rule.BaseVersion))
+	html.WriteString(`<ul style="margin-top: 8px; padding-left: 20px;">`)
+	for _, v := range versionsToSync {
+		html.WriteString(fmt.Sprintf(`<li>%s</li>`, v))
+	}
+	html.WriteString(`</ul>`)
+	html.WriteString(fmt.Sprintf(`<p style="margin-top: 8px;">Starting sync of %s...</p></div>`, version))
+
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(html.String()))
+}
+
+// checkForNewVersions returns versions that need to be synced for a rule
+func (s *Server) checkForNewVersions(rule AutoSyncRule) ([]string, error) {
+	// Get available versions from quay.io
+	repo := "quay.io/openshift-release-dev/ocp-release"
+	ref, err := name.ParseReference(repo)
+	if err != nil {
+		return nil, err
+	}
+
+	opts := []remote.Option{remote.WithAuthFromKeychain(s.Keychain)}
+	tags, err := remote.List(ref.Context(), opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	// Filter to matching versions
+	var matchingVersions []string
+	for _, tag := range tags {
+		if !strings.HasSuffix(tag, "-x86_64") {
+			continue
+		}
+		version := strings.TrimSuffix(tag, "-x86_64")
+		if !strings.HasPrefix(version, rule.BaseVersion+".") {
+			continue
+		}
+		matchingVersions = append(matchingVersions, version)
+	}
+
+	// Sort descending (newest first)
+	sort.Slice(matchingVersions, func(i, j int) bool {
+		return compareVersions(matchingVersions[i], matchingVersions[j]) > 0
+	})
+
+	// Keep only the latest N
+	if len(matchingVersions) > rule.KeepLatest {
+		matchingVersions = matchingVersions[:rule.KeepLatest]
+	}
+
+	// Check which are already synced
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var toSync []string
+	for _, v := range matchingVersions {
+		if !s.syncedVersions[v] {
+			// Check if it's in the local registry
+			if !s.isVersionSynced(v) {
+				toSync = append(toSync, v)
+			} else {
+				s.syncedVersions[v] = true
+			}
+		}
+	}
+
+	return toSync, nil
+}
+
+// isVersionSynced checks if a version is in the local registry
+func (s *Server) isVersionSynced(version string) bool {
+	registry := s.Config.DestRegistry
+	if registry == "" {
+		registry = "fastregistry.gw.lo:5000"
+	}
+
+	tag := version + "-x86_64"
+	url := fmt.Sprintf("http://%s/v2/%s/manifests/%s", registry, s.Config.DestRepo, tag)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	if s.Config.Insecure {
+		client.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
+
+	resp, err := client.Head(url)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	return resp.StatusCode == http.StatusOK
+}
+
+// startAutoSync starts a sync job for a version
+func (s *Server) startAutoSync(version string, ruleIndex int) {
+	s.mu.Lock()
+	if s.current != nil && s.current.Status == "running" {
+		s.mu.Unlock()
+		s.logSystem("warn", "Auto-sync skipped for %s - another sync in progress", version)
+		return
+	}
+
+	job := &SyncJob{
+		ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
+		Version:   version,
+		Source:    "quay.io/openshift-release-dev/ocp-release",
+		Dest:      s.Config.DestRegistry,
+		DestRepo:  s.Config.DestRepo,
+		Status:    "running",
+		StartTime: time.Now(),
+		Log:       []string{},
+	}
+	s.jobs[job.ID] = job
+	s.current = job
+	s.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cancel = cancel
+
+	s.logSystem("info", "Auto-sync starting for %s", version)
+	s.runSync(ctx, job, s.Keychain, s.Config.Insecure)
+
+	// Update rule with last sync
+	s.mu.Lock()
+	if ruleIndex >= 0 && ruleIndex < len(s.Config.AutoSyncRules) {
+		s.Config.AutoSyncRules[ruleIndex].LastSync = version
+		s.Config.AutoSyncRules[ruleIndex].LastCheck = time.Now()
+	}
+	if job.Status == "completed" {
+		s.syncedVersions[version] = true
+	}
+	s.mu.Unlock()
+}
+
+// startAutoSyncChecker starts the background auto-sync checker
+func (s *Server) startAutoSyncChecker() {
+	s.autoSyncStop = make(chan struct{})
+
+	go func() {
+		// Wait a bit before first check
+		time.Sleep(30 * time.Second)
+
+		ticker := time.NewTicker(time.Duration(s.Config.CheckInterval) * time.Minute)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-s.autoSyncStop:
+				return
+			case <-ticker.C:
+				s.runAutoSyncCheck()
+			}
+		}
+	}()
+}
+
+// runAutoSyncCheck checks all enabled rules for new versions
+func (s *Server) runAutoSyncCheck() {
+	s.mu.RLock()
+	rules := make([]AutoSyncRule, len(s.Config.AutoSyncRules))
+	copy(rules, s.Config.AutoSyncRules)
+	s.mu.RUnlock()
+
+	for i, rule := range rules {
+		if !rule.Enabled {
+			continue
+		}
+
+		s.logSystem("info", "Auto-sync check for %s", rule.BaseVersion)
+
+		versions, err := s.checkForNewVersions(rule)
+		if err != nil {
+			s.logSystem("error", "Auto-sync check failed for %s: %v", rule.BaseVersion, err)
+			continue
+		}
+
+		if len(versions) > 0 {
+			s.logSystem("info", "Auto-sync found %d new versions for %s: %v", len(versions), rule.BaseVersion, versions)
+			// Sync the first (newest) missing version
+			s.startAutoSync(versions[0], i)
+			// Only sync one at a time, next check will pick up more
+			return
+		}
+
+		// Update last check time
+		s.mu.Lock()
+		if i < len(s.Config.AutoSyncRules) {
+			s.Config.AutoSyncRules[i].LastCheck = time.Now()
+		}
+		s.mu.Unlock()
+	}
 }
