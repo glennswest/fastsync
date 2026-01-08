@@ -218,44 +218,114 @@ func (s *Server) handleRegistryStats(w http.ResponseWriter, r *http.Request) {
 	if s.current != nil && s.current.Status == "running" {
 		runningJob = s.current
 	}
+	// Calculate total sync duration
+	var totalDuration time.Duration
+	var completedJobs int
+	for _, job := range s.jobs {
+		if job.Status == "completed" && !job.EndTime.IsZero() {
+			totalDuration += job.EndTime.Sub(job.StartTime)
+			completedJobs++
+		}
+	}
 	s.mu.RUnlock()
 
-	// Try to get repository count from local registry
+	// Try to get repository count and estimate storage from local registry
 	repoCount := 0
-	if s.Config.DestRegistry != "" {
-		repos, _ := s.listRepositories(s.Config.DestRegistry)
-		repoCount = len(repos)
+	tagCount := 0
+	registry := s.Config.DestRegistry
+	if registry == "" {
+		registry = "fastregistry.gw.lo:5000"
+	}
+	repos, _ := s.listRepositories(registry)
+	repoCount = len(repos)
+
+	// Count tags across all repos (estimate of images)
+	for _, repo := range repos {
+		tags, _ := s.listTags(registry, repo)
+		tagCount += len(tags)
 	}
 
 	status := "Healthy"
 	statusClass := "success"
+	registryStatusDetail := "Connected"
 	if runningJob != nil {
 		status = "Syncing"
 		statusClass = "warning"
+		registryStatusDetail = fmt.Sprintf("Syncing %s", runningJob.Version)
+	}
+
+	// Estimate storage (rough estimate: ~500MB per OpenShift component image average)
+	storageEstimate := "-"
+	if tagCount > 0 {
+		estimatedGB := float64(tagCount) * 0.5 // 500MB average per tag
+		if estimatedGB > 1000 {
+			storageEstimate = fmt.Sprintf("~%.1f TB", estimatedGB/1000)
+		} else {
+			storageEstimate = fmt.Sprintf("~%.1f GB", estimatedGB)
+		}
+	}
+
+	avgDuration := "-"
+	if completedJobs > 0 {
+		avg := totalDuration / time.Duration(completedJobs)
+		avgDuration = avg.Round(time.Second).String()
 	}
 
 	html := fmt.Sprintf(`
 		<div class="stat-card">
 			<div class="stat-label">Registry Status</div>
 			<div class="stat-value %s">%s</div>
+			<div class="stat-subtitle">%s</div>
 		</div>
 		<div class="stat-card">
 			<div class="stat-label">Repositories</div>
 			<div class="stat-value">%d</div>
+			<div class="stat-subtitle">%d total tags</div>
 		</div>
 		<div class="stat-card">
-			<div class="stat-label">Total Sync Jobs</div>
+			<div class="stat-label">Sync Jobs</div>
 			<div class="stat-value">%d</div>
+			<div class="stat-subtitle">Avg: %s</div>
 		</div>
 		<div class="stat-card">
-			<div class="stat-label">Storage Used</div>
-			<div class="stat-value">-</div>
-			<div class="stat-subtitle">Not available</div>
+			<div class="stat-label">Est. Storage</div>
+			<div class="stat-value">%s</div>
+			<div class="stat-subtitle">Based on tag count</div>
 		</div>
-	`, statusClass, status, repoCount, jobCount)
+	`, statusClass, status, registryStatusDetail, repoCount, tagCount, jobCount, avgDuration, storageEstimate)
 
 	w.Header().Set("Content-Type", "text/html")
 	w.Write([]byte(html))
+}
+
+// listTags gets tags for a repository
+func (s *Server) listTags(registry, repo string) ([]string, error) {
+	url := fmt.Sprintf("http://%s/v2/%s/tags/list", registry, repo)
+	if !s.Config.Insecure {
+		url = fmt.Sprintf("https://%s/v2/%s/tags/list", registry, repo)
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	if s.Config.Insecure {
+		client.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
+
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var tagList struct {
+		Tags []string `json:"tags"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tagList); err != nil {
+		return nil, err
+	}
+
+	return tagList.Tags, nil
 }
 
 func (s *Server) listRepositories(registry string) ([]string, error) {
@@ -904,72 +974,96 @@ func (s *Server) handleLogsClear(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "cleared"})
 }
 
-// OpenShift versions handler
+// OpenShift versions handler - queries quay.io for real versions
 func (s *Server) handleOpenShiftVersions(w http.ResponseWriter, r *http.Request) {
-	channel := r.URL.Query().Get("channel")
 	minor := r.URL.Query().Get("minor")
 
-	// In production, this would query the OpenShift release API
-	// For now, return some common versions
-	versions := []struct {
-		Version string
-		Channel string
-		Date    string
-		Status  string
-	}{
-		{"4.18.30", "stable", "2025-12-15", "available"},
-		{"4.18.29", "stable", "2025-12-01", "available"},
-		{"4.17.35", "stable", "2025-11-20", "available"},
-		{"4.17.34", "stable", "2025-11-10", "available"},
-		{"4.16.40", "stable", "2025-10-15", "available"},
-		{"4.15.45", "stable", "2025-09-01", "available"},
+	// Query quay.io for actual tags
+	repo := "quay.io/openshift-release-dev/ocp-release"
+	ref, err := name.ParseReference(repo)
+	if err != nil {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(fmt.Sprintf(`<div class="empty-state">Error parsing repo: %s</div>`, err.Error())))
+		return
 	}
 
-	// Filter
-	var filtered []struct {
-		Version string
-		Channel string
-		Date    string
-		Status  string
-	}
-	for _, v := range versions {
-		if channel != "" && v.Channel != channel {
-			continue
-		}
-		if minor != "" && !strings.HasPrefix(v.Version, minor) {
-			continue
-		}
-		filtered = append(filtered, v)
+	opts := []remote.Option{remote.WithAuthFromKeychain(s.Keychain)}
+	tags, err := remote.List(ref.Context(), opts...)
+	if err != nil {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(fmt.Sprintf(`<div class="empty-state">Error fetching tags: %s<br>Make sure pull secret is configured.</div>`, err.Error())))
+		return
 	}
 
-	if len(filtered) == 0 {
+	// Filter to x86_64 versions and sort
+	var versions []string
+	for _, tag := range tags {
+		if !strings.HasSuffix(tag, "-x86_64") {
+			continue
+		}
+		version := strings.TrimSuffix(tag, "-x86_64")
+		// Only include semver-like versions (4.x.y)
+		if !strings.HasPrefix(version, "4.") {
+			continue
+		}
+		if minor != "" && !strings.HasPrefix(version, minor) {
+			continue
+		}
+		versions = append(versions, version)
+	}
+
+	// Sort versions descending (newest first)
+	sort.Slice(versions, func(i, j int) bool {
+		return compareVersions(versions[i], versions[j]) > 0
+	})
+
+	// Limit to 50 versions
+	if len(versions) > 50 {
+		versions = versions[:50]
+	}
+
+	if len(versions) == 0 {
 		w.Header().Set("Content-Type", "text/html")
 		w.Write([]byte(`<div class="empty-state">No versions found matching the filter</div>`))
 		return
 	}
 
 	var html strings.Builder
-	for _, v := range filtered {
+	for _, version := range versions {
 		html.WriteString(fmt.Sprintf(`
 			<div class="version-card">
 				<div class="version-card-header">
 					<span class="version-number">%s</span>
-					<span class="badge badge-success">%s</span>
+					<span class="badge badge-success">available</span>
 				</div>
-				<div class="version-meta">Channel: %s</div>
-				<div class="version-meta">Released: %s</div>
-				<button class="btn btn-primary btn-sm" style="margin-top: 12px; width: 100%;"
+				<div class="version-meta">Architecture: x86_64</div>
+				<button class="btn btn-primary btn-sm" style="margin-top: 12px; width: 100%%;"
 					hx-post="/api/sync"
 					hx-vals='{"version": "%s", "source": "quay.io/openshift-release-dev/ocp-release", "dest": "fastregistry.gw.lo:5000", "dest_repo": "openshift/release", "insecure": true}'
 					hx-target="#sync-result">
 					Sync This Version
 				</button>
 			</div>
-		`, v.Version, v.Status, v.Channel, v.Date, v.Version))
+		`, version, version))
 	}
 
 	w.Header().Set("Content-Type", "text/html")
 	w.Write([]byte(html.String()))
+}
+
+// compareVersions compares two semantic versions, returns >0 if a > b
+func compareVersions(a, b string) int {
+	partsA := strings.Split(a, ".")
+	partsB := strings.Split(b, ".")
+	for i := 0; i < len(partsA) && i < len(partsB); i++ {
+		var numA, numB int
+		fmt.Sscanf(partsA[i], "%d", &numA)
+		fmt.Sscanf(partsB[i], "%d", &numB)
+		if numA != numB {
+			return numA - numB
+		}
+	}
+	return len(partsA) - len(partsB)
 }
 
 // Settings handlers
