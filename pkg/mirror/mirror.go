@@ -482,17 +482,24 @@ func (e *Engine) verifyImageDigest(ctx context.Context, ref name.Reference, expe
 		return false
 	}
 	for _, layer := range layers {
-		// Actually verify the blob exists by attempting to open a reader
-		// layer.Size() just returns manifest metadata, doesn't verify blob exists
-		rc, err := layer.Compressed()
+		// Get the layer digest and expected size
+		digest, err := layer.Digest()
 		if err != nil {
 			return false
 		}
-		// Read a single byte to confirm blob is accessible
-		buf := make([]byte, 1)
-		_, err = rc.Read(buf)
-		rc.Close()
+		expectedSize, err := layer.Size()
 		if err != nil {
+			return false
+		}
+
+		// Check if blob exists and has correct size using HEAD request
+		// This is more reliable than trying to read bytes which might be cached
+		blobRef := ref.Context().Digest(digest.String())
+		blobDesc, err := remote.Head(blobRef, opts...)
+		if err != nil {
+			return false
+		}
+		if blobDesc.Size != expectedSize {
 			return false
 		}
 	}
@@ -529,17 +536,23 @@ func (e *Engine) verifyImageExists(ctx context.Context, ref name.Reference, opts
 		return false
 	}
 	for _, layer := range layers {
-		// Actually verify the blob exists by attempting to open a reader
-		// layer.Size() just returns manifest metadata, doesn't verify blob exists
-		rc, err := layer.Compressed()
+		// Get the layer digest and expected size
+		digest, err := layer.Digest()
 		if err != nil {
 			return false
 		}
-		// Read a single byte to confirm blob is accessible
-		buf := make([]byte, 1)
-		_, err = rc.Read(buf)
-		rc.Close()
+		expectedSize, err := layer.Size()
 		if err != nil {
+			return false
+		}
+
+		// Check if blob exists and has correct size using HEAD request
+		blobRef := ref.Context().Digest(digest.String())
+		blobDesc, err := remote.Head(blobRef, opts...)
+		if err != nil {
+			return false
+		}
+		if blobDesc.Size != expectedSize {
 			return false
 		}
 	}
