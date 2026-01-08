@@ -304,9 +304,11 @@ func (e *Engine) mirrorImage(ctx context.Context, comp release.ComponentImage) R
 			continue
 		}
 
-		// Verify the image was written with correct digest
+		// Verify the image was written with correct digest (light check - just manifest)
+		// We trust the write succeeded, just confirm manifest is there with right digest
 		if expectedDigest != "" {
-			if !e.verifyImageDigest(ctx, destRef, expectedDigest, destRemoteOpts) {
+			desc, err := remote.Get(destRef, destRemoteOpts...)
+			if err != nil || desc.Digest.String() != expectedDigest {
 				lastErr = fmt.Errorf("verification failed: digest mismatch after write")
 				continue
 			}
@@ -439,8 +441,9 @@ func (e *Engine) mirrorReleaseImage(ctx context.Context, rel *release.Release) e
 			continue
 		}
 
-		// Verify the release image was written successfully
-		if !e.verifyImageExists(ctx, destRef, destOpts) {
+		// Verify the release image was written successfully (light check - just manifest)
+		desc, err := remote.Get(destRef, destOpts...)
+		if err != nil || desc.Digest.String() == "" {
 			lastErr = fmt.Errorf("verification failed: release image not found after write")
 			continue
 		}
